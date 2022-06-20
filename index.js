@@ -1,6 +1,7 @@
 const fs = require('fs');
-const { pipeline } = require('stream');
+const { pipeline, PassThrough } = require('stream');
 const { promisify } = require('util');
+const aws = require('aws-sdk');
 const pipelineAsync = promisify(pipeline);
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -29,7 +30,10 @@ async function producer(pagination = 0) {
         ),
       };
     }),
-    pagination: pagination >= 1000_000 ? null : pagination + 100,
+    pagination:
+      pagination >= parseInt(process.env.LIMIT || 1000)
+        ? null
+        : pagination + 100,
   };
 }
 
@@ -51,11 +55,21 @@ async function* convert(source) {
 }
 
 (async () => {
-  console.log(`start`);
-  await pipelineAsync(
-    paginate,
-    convert,
-    fs.createWriteStream('/tmp/output.csv')
-  );
-  console.log('end');
+  const s3Stream = new PassThrough();
+  const s3 = new aws.S3();
+  const s3Upload = s3
+    .upload({
+      Bucket: 'balazs4-generator',
+      Key: `s3.csv`,
+      Body: s3Stream,
+    })
+    .promise();
+
+  const [pipelineResult, s3Result] = await Promise.all([
+    pipelineAsync(paginate, convert, s3Stream),
+    s3Upload,
+  ]);
+
+  const memoryUsage = process.memoryUsage();
+  console.log({ s3Result, memoryUsage });
 })();
